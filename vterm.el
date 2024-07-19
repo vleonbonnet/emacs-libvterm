@@ -779,8 +779,8 @@ Exceptions are defined by `vterm-keymap-exceptions'."
            :name "vterm"
            :buffer (current-buffer)
            :command
-           `("/bin/sh" "-c"
-             ,(format
+           `(,fakecygpty-program "/bin/sh" "-c"
+                                 ,(format
                "stty -nl sane %s erase ^? rows %d columns %d >/dev/null && exec %s"
                ;; Some stty implementations (i.e. that of *BSD) do not
                ;; support the iutf8 option.  to handle that, we run some
@@ -810,6 +810,7 @@ Exceptions are defined by `vterm-keymap-exceptions'."
             (lambda () (interactive)
               (user-error "You cannot change major mode in vterm buffers")) nil t)
 
+  (process-put vterm--process :fakecygpty-p t)
   (vterm--set-pty-name vterm--term (process-tty-name vterm--process))
   (process-put vterm--process 'adjust-window-size-function
                #'vterm--window-adjust-process-window-size)
