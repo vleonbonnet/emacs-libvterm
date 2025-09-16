@@ -73,9 +73,7 @@ else()
 
   ExternalProject_add(libtermiwin
     GIT_REPOSITORY https://github.com/steeviebops/termiWin
-    GIT_TAG fd0901ba1d5dbb8b80542f424d7aca5430760952
-	PATCH_COMMAND sed -i "10a add_compile_options(\"-Wno-incompatible-pointer-types\")" CMakeLists.txt
-    BUILD_COMMAND "mingw32-make"
+    GIT_TAG 5d5f3474ab823e2c491159cf979ae9fc73f57f9a
     INSTALL_COMMAND "")
 
   ExternalProject_Get_property(libtermiwin SOURCE_DIR)
