@@ -43,7 +43,7 @@
 ;; emacs-libvterm will downloaded and compiled.  In this case, libtool is
 ;; needed.
 
-;; The reccomended way to install emacs-libvterm is from MELPA.
+;; The recommended way to install emacs-libvterm is from MELPA.
 
 ;;; Usage
 
@@ -172,11 +172,26 @@ the executable."
   :type 'string
   :group 'vterm)
 
-(defcustom vterm-tramp-shells '(("docker" "/bin/sh"))
+(defcustom vterm-tramp-shells
+  '(("ssh" login-shell) ("scp" login-shell) ("docker" "/bin/sh"))
   "The shell that gets run in the vterm for tramp.
 
 `vterm-tramp-shells' has to be a list of pairs of the format:
-\(TRAMP-METHOD SHELL)"
+\(TRAMP-METHOD SHELL)
+
+Use t as TRAMP-METHOD to specify a default shell for all methods.
+Specific methods always take precedence over t.
+
+Set SHELL to \\='login-shell to use the user's login shell on the host.
+The login-shell detection currently works for POSIX-compliant remote
+hosts that have the getent command (regular GNU/Linux distros, *BSDs,
+but not MacOS X unfortunately).
+
+You can specify an additional second SHELL command as a fallback
+that is used when the login-shell detection fails, e.g.,
+\\='((\"ssh\" login-shell \"/bin/bash\") ...)
+If no second SHELL command is specified with \\='login-shell, vterm will
+fall back to tramp's shell."
   :type '(alist :key-type string :value-type string)
   :group 'vterm)
 
@@ -368,10 +383,13 @@ This means that vterm will render bold with the default face weight."
   :type  'boolean
   :group 'vterm)
 
-(defcustom vterm-set-bold-hightbright nil
-  "When not-nil, using hightbright colors for bolded text, see #549."
+(defcustom vterm-set-bold-highbright nil
+  "When not-nil, using highbright colors for bolded text, see #549."
   :type  'boolean
   :group 'vterm)
+
+(define-obsolete-variable-alias 'vterm-set-bold-hightbright
+  'vterm-set-bold-highbright "0.0.2")
 
 (defcustom vterm-ignore-blink-cursor t
   "When t, vterm will ignore request from application to turn on/off cursor blink.
@@ -414,7 +432,7 @@ not require any shell-side configuration. See
 
 vterm inserts \\='fake\\=' newlines purely for rendering. When using
 vterm-copy-mode these are in conflict with many emacs functions
-like isearch-forward. if this varialbe is not-nil the
+like isearch-forward. if this variable is not-nil the
 fake-newlines are removed on entering copy-mode and re-inserted
 on leaving copy mode. Also truncate-lines is set to t on entering
 copy-mode and set to nil on leaving."
@@ -559,7 +577,7 @@ Only background is used."
   "Shell process of current term.")
 
 (defvar-local vterm--redraw-timer nil)
-(defvar-local vterm--redraw-immididately nil)
+(defvar-local vterm--redraw-immediately nil)
 (defvar-local vterm--linenum-remapping nil)
 (defvar-local vterm--prompt-tracking-enabled-p nil)
 (defvar-local vterm--insert-function (symbol-function #'insert))
@@ -568,6 +586,7 @@ Only background is used."
 (defvar-local vterm--undecoded-bytes nil)
 (defvar-local vterm--copy-mode-fake-newlines nil)
 
+(define-obsolete-variable-alias 'vterm--redraw-immididately 'vterm--redraw-immediately "2025-07-15")
 
 (defvar vterm-timer-delay 0.1
   "Delay for refreshing the buffer after receiving updates from libvterm.
@@ -759,7 +778,7 @@ Exceptions are defined by `vterm-keymap-exceptions'."
                                   vterm-disable-underline
                                   vterm-disable-inverse-video
                                   vterm-ignore-blink-cursor
-                                  vterm-set-bold-hightbright))
+                                  vterm-set-bold-highbright))
     (setq buffer-read-only t)
     (setq-local scroll-conservatively 101)
     (setq-local scroll-margin 0)
@@ -814,16 +833,72 @@ Exceptions are defined by `vterm-keymap-exceptions'."
   (vterm--set-pty-name vterm--term (process-tty-name vterm--process))
   (process-put vterm--process 'adjust-window-size-function
                #'vterm--window-adjust-process-window-size)
+
+  ;; Set the truncation slot for 'buffer-display-table' to the ASCII code for a
+  ;; space character (32) to make the vterm buffer display a space instead of
+  ;; the default truncation character ($) when a line is truncated.
+  (let* ((display-table (or buffer-display-table (make-display-table))))
+    (set-display-table-slot display-table 'truncation 32)
+    (setq buffer-display-table display-table))
+
   ;; Support to compilation-shell-minor-mode
   ;; Is this necessary? See vterm--compilation-setup
   (setq next-error-function 'vterm-next-error-function)
   (setq-local bookmark-make-record-function 'vterm--bookmark-make-record))
 
+(defun vterm--tramp-get-shell (method)
+  "Get the shell for a remote location as specified in `vterm-tramp-shells'.
+The argument METHOD is the method string (as used by tramp) to get the shell
+for, or t to get the default shell for all methods."
+  (let* ((specs (cdr (assoc method vterm-tramp-shells)))
+         (first (car specs))
+         (second (cadr specs)))
+    ;; Allow '(... login-shell) or '(... 'login-shell).
+    (if (or (eq first 'login-shell)
+            (and (consp first) (eq (cadr first) 'login-shell)))
+        ;; If the first element is 'login-shell, try to determine the user's
+        ;; login shell on the remote host.  This should work for all
+        ;; POSIX-compliant systems with the getent command in PATH.  This
+        ;; includes regular GNU/Linux distros, *BSDs, but not MacOS X.  If
+        ;; the login-shell determination fails at any point, the second
+        ;; element in the shell spec is used (if present, otherwise nil is
+        ;; returned).
+        (let* ((entry (ignore-errors
+                        (with-output-to-string
+                          (with-current-buffer standard-output
+                            ;; The getent command returns the passwd entry
+                            ;; for the specified user independently of the
+                            ;; used name service (i.e., not only for static
+                            ;; passwd files, but also for LDAP, etc).
+                            ;;
+                            ;; Use a shell command here to get $LOGNAME.
+                            ;; Using the tramp user does not always work as
+                            ;; it can be nil, e.g., with ssh host configs.
+                            ;; $LOGNAME is defined in all POSIX-compliant
+                            ;; systems.
+                            (unless (= 0 (process-file-shell-command
+                                          "getent passwd $LOGNAME"
+                                          nil (current-buffer) nil))
+                              (error "Unexpected return value"))
+                            ;; If we have more than one line, the output is
+                            ;; not the expected single passwd entry.
+                            ;; Most likely, $LOGNAME is not set.
+                            (when (> (count-lines (point-min) (point-max)) 1)
+                              (error "Unexpected output"))))))
+               (shell (when entry
+                        ;; The returned Unix passwd entry is a colon-
+                        ;; separated line.  The 6th (last) element specifies
+                        ;; the user's shell.
+                        (nth 6 (split-string entry ":" nil "[ \t\n\r]+")))))
+          (or shell second))
+      first)))
+
 (defun vterm--get-shell ()
   "Get the shell that gets run in the vterm."
   (if (ignore-errors (file-remote-p default-directory))
       (with-parsed-tramp-file-name default-directory nil
-        (or (cadr (assoc method vterm-tramp-shells))
+        (or (vterm--tramp-get-shell method)
+            (vterm--tramp-get-shell t)
             (with-connection-local-variables shell-file-name)
             vterm-shell))
     vterm-shell))
@@ -873,7 +948,8 @@ it to the bookmarked directory if needed."
 `'compilation-shell-minor-mode' would change the value of local
 variable `next-error-function', so we should call this function in
 `compilation-shell-minor-mode-hook'."
-  (when (eq major-mode 'vterm-mode)
+  (when (or (eq major-mode 'vterm-mode)
+            (derived-mode-p 'vterm-mode))
     (setq next-error-function 'vterm-next-error-function)))
 
 (add-hook 'compilation-shell-minor-mode-hook #'vterm--compilation-setup)
@@ -923,13 +999,14 @@ additional output received from the underlying process and will
 behave similarly to buffer in `fundamental-mode'.  This mode is
 typically used to copy text from vterm buffers.
 
-A conventient way to exit `vterm-copy-mode' is with
+A convenient way to exit `vterm-copy-mode' is with
 `vterm-copy-mode-done', which copies the selected text and exit
 `vterm-copy-mode'."
   :group 'vterm
   :lighter " VTermCopy"
   :keymap vterm-copy-mode-map
-  (if (equal major-mode 'vterm-mode)
+  (if (or (equal major-mode 'vterm-mode)
+          (derived-mode-p 'vterm-mode))
       (if vterm-copy-mode
           (vterm--enter-copy-mode)
         (vterm--exit-copy-mode))
@@ -983,7 +1060,7 @@ will invert `vterm-copy-exclude-prompt' for that call."
     (let ((inhibit-redisplay t)
           (inhibit-read-only t))
       (vterm--update vterm--term key shift meta ctrl)
-      (setq vterm--redraw-immididately t)
+      (setq vterm--redraw-immediately t)
       (when accept-proc-output
         (accept-process-output vterm--process vterm-timer-delay nil t)))))
 
@@ -1184,7 +1261,7 @@ Optional argument PASTE-P paste-p."
       (vterm--update vterm--term (char-to-string char)))
     (when paste-p
       (vterm--update vterm--term "<end_paste>")))
-  (setq vterm--redraw-immididately t)
+  (setq vterm--redraw-immediately t)
   (accept-process-output vterm--process vterm-timer-delay nil t))
 
 (defun vterm-insert (&rest contents)
@@ -1199,11 +1276,11 @@ Provide similar behavior as `insert' for vterm."
         (dolist (char (string-to-list c))
           (vterm--update vterm--term (char-to-string char)))))
     (vterm--update vterm--term "<end_paste>")
-    (setq vterm--redraw-immididately t)
+    (setq vterm--redraw-immediately t)
     (accept-process-output vterm--process vterm-timer-delay nil t)))
 
 (defun vterm-delete-region (start end)
-  "Delete the text between START and END for vterm. "
+  "Delete the text between START and END for vterm."
   (when vterm--term
     (save-excursion
       (when (get-text-property start 'vterm-line-wrap)
@@ -1241,9 +1318,9 @@ The return value is `t' when point moved successfully."
 ;;; Internal
 
 (defun vterm--forward-char ()
-  "Move point 1 character forward ().
+  "Move point 1 character forward.
 
-the return value is `t' when cursor moved."
+The return value is `t' when cursor moved."
   (vterm-reset-cursor-point)
   (let ((pt (point)))
     (vterm-send-key "<right>" nil nil nil t)
@@ -1267,7 +1344,7 @@ the return value is `t' when cursor moved."
 (defun vterm--backward-char ()
   "Move point N characters backward.
 
-Return count of moved characeters."
+Return count of moved characters."
   (vterm-reset-cursor-point)
   (let ((pt (point)))
     (vterm-send-key "<left>" nil nil nil t)
@@ -1326,14 +1403,14 @@ looks like: ((\"m\" :shift ))"
 
 (defun vterm--invalidate ()
   "The terminal buffer is invalidated, the buffer needs redrawing."
-  (if (and (not vterm--redraw-immididately)
+  (if (and (not vterm--redraw-immediately)
            vterm-timer-delay)
       (unless vterm--redraw-timer
         (setq vterm--redraw-timer
               (run-with-timer vterm-timer-delay nil
                               #'vterm--delayed-redraw (current-buffer))))
     (vterm--delayed-redraw (current-buffer))
-    (setq vterm--redraw-immididately nil)))
+    (setq vterm--redraw-immediately nil)))
 
 (defun vterm-check-proc (&optional buffer)
   "Check if there is a running process associated to the vterm buffer BUFFER.
@@ -1550,7 +1627,8 @@ Argument EVENT process event."
 (defun vterm--text-scale-mode (&optional _argv)
   "Fix `line-number' height for scaled text."
   (and text-scale-mode
-       (equal major-mode 'vterm-mode)
+       (or (equal major-mode 'vterm-mode)
+           (derived-mode-p 'vterm-mode))
        (boundp 'display-line-numbers)
        (let ((height (expt text-scale-mode-step
                            text-scale-mode-amount)))
@@ -1741,7 +1819,7 @@ in README."
 
 (defun vterm--get-beginning-of-line (&optional pt)
   "Find the start of the line, bypassing line wraps.
-If PT is specified, find it's beginning of the line instead of the beginning
+If PT is specified, find its beginning of the line instead of the beginning
 of the line at cursor."
   (save-excursion
     (when pt (goto-char pt))
@@ -1753,8 +1831,8 @@ of the line at cursor."
     (point)))
 
 (defun vterm--get-end-of-line (&optional pt)
-  "Find the start of the line, bypassing line wraps.
-If PT is specified, find it's end of the line instead of the end
+  "Find the end of the line, bypassing line wraps.
+If PT is specified, find its end of the line instead of the end
 of the line at cursor."
   (save-excursion
     (when pt (goto-char pt))
@@ -1789,7 +1867,7 @@ More information see `vterm--prompt-tracking-enabled-p' and
   (= (point) (or (vterm--get-prompt-point) 0)))
 
 (defun vterm-cursor-in-command-buffer-p (&optional pt)
-  "Check whether cursor in command buffer area."
+  "Check whether cursor is in command buffer area."
   (save-excursion
     (vterm-reset-cursor-point)
     (let ((promp-pt (vterm--get-prompt-point)))
