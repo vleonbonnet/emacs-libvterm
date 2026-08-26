@@ -4,9 +4,9 @@ include(ExternalProject)
 project(emacs-libvterm C)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "OpenBSD" OR CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
-   set(LIBVTERM_BUILD_COMMAND "gmake")
+  set(LIBVTERM_BUILD_COMMAND "gmake")
 else()
-   set(LIBVTERM_BUILD_COMMAND "make")
+  set(LIBVTERM_BUILD_COMMAND "make")
 endif()
 
 add_library(vterm-module MODULE vterm-module.c utf8.c elisp.c)
@@ -16,7 +16,7 @@ set_target_properties(vterm-module PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   PREFIX ""
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}
-  )
+)
 
 # Set RelWithDebInfo as default build type
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -32,20 +32,20 @@ if (USE_SYSTEM_LIBVTERM)
   # try to find the vterm.h header file.
   find_path(LIBVTERM_INCLUDE_DIR
     NAMES vterm.h
-    )
+  )
 
   # vterm.h is found.
   if (LIBVTERM_INCLUDE_DIR)
     message(STATUS "System libvterm detected")
     execute_process(COMMAND  grep -c "VTermStringFragment" "${LIBVTERM_INCLUDE_DIR}/vterm.h" OUTPUT_VARIABLE VTermStringFragmentExists)
     if (${VTermStringFragmentExists} EQUAL "0")
-#    add_compile_definitions(VTermStringFragmentNotExists)
-    add_definitions(-DVTermStringFragmentNotExists)
+      #    add_compile_definitions(VTermStringFragmentNotExists)
+      add_definitions(-DVTermStringFragmentNotExists)
     endif()
     execute_process(COMMAND  grep -c "VTermSelectionMask" "${LIBVTERM_INCLUDE_DIR}/vterm.h" OUTPUT_VARIABLE VTermSelectionMaskExists)
     if (${VTermSelectionMaskExists} EQUAL "0")
-#    add_compile_definitions(VTermStringFragmentNotExists)
-    add_definitions(-DVTermSelectionMaskNotExists)
+      #    add_compile_definitions(VTermStringFragmentNotExists)
+      add_definitions(-DVTermSelectionMaskNotExists)
     endif()
     execute_process(COMMAND  grep -c "sb_clear" "${LIBVTERM_INCLUDE_DIR}/vterm.h" OUTPUT_VARIABLE VTermSBClearExists)
     if (${VTermSBClearExists} EQUAL "0")
@@ -64,7 +64,7 @@ if (LIBVTERM_INCLUDE_DIR)
   find_library(LIBVTERM_LIBRARY NAMES
     vterm
     libvterm
-    )
+  )
 
   if(NOT LIBVTERM_LIBRARY)
     message(FATAL_ERROR "libvterm not found")
@@ -110,19 +110,25 @@ else()
   file(MAKE_DIRECTORY ${LIBVTERM_INCLUDE_DIR})
 endif()
 
-add_library(termiwin STATIC IMPORTED)
-set_target_properties(termiwin PROPERTIES IMPORTED_LOCATION ${LIBTERMIWIN_LIBRARY})
-target_include_directories(termiwin INTERFACE ${LIBTERMIWIN_INCLUDE_DIR})
+if (NOT LIBVTERM_INCLUDE_DIR)
+  # The bundled libvterm build needs termiWin; system libvterm does not.
+  add_library(termiwin STATIC IMPORTED)
+  set_target_properties(termiwin PROPERTIES IMPORTED_LOCATION ${LIBTERMIWIN_LIBRARY})
+  target_include_directories(termiwin INTERFACE ${LIBTERMIWIN_INCLUDE_DIR})
+endif()
 
 add_library(vterm STATIC IMPORTED)
 set_target_properties(vterm PROPERTIES IMPORTED_LOCATION ${LIBVTERM_LIBRARY})
 target_include_directories(vterm INTERFACE ${LIBVTERM_INCLUDE_DIR})
 
 # Link with libvterm
-target_link_libraries(vterm-module PUBLIC vterm termiwin)
+target_link_libraries(vterm-module PUBLIC vterm)
+if (TARGET termiwin)
+  target_link_libraries(vterm-module PUBLIC termiwin)
+endif()
 
 # Custom run command for testing
 add_custom_target(run
   COMMAND emacs -Q -L ${CMAKE_SOURCE_DIR} -L ${CMAKE_BINARY_DIR} --eval "\\(require \\'vterm\\)" --eval "\\(vterm\\)"
   DEPENDS vterm-module
-  )
+)
